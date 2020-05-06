@@ -4,49 +4,60 @@ import numpy as np
 import pandas as pd
 from collections import OrderedDict
 from matplotlib import pyplot as plt
-from segmentation import segmentImage
 
 dir_path = "dataset/"
 subplot = 170
 fn = 0
-words_img_count = 0
 
 class PreprocessImageDataset(object):
     def __init__(self):
         self.dir_path = "dataset/"
         self.subplot = 160
         self.kernel = np.ones((5,5),np.uint8)
+        self.words_count = 0
+        self.chars_count = 0
+        self.tobe_proceed = ['14.png', '2.jpg', '9.jpg', '215.jpg']
 
     def preprocessor(self):
         for root, dirs, files in os.walk("dataset"):
             for file in files:
+                if file not in self.tobe_proceed:
+                    continue
                 img = cv.imread(dir_path + file)
                 gray_img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-                plt.subplot(subplot+1)
-                plt.imshow(gray_img)
+                # plt.subplot(subplot+1)
+                # plt.imshow(gray_img)
 
                 denoised_img = self._denoising(gray_img)
-                plt.subplot(subplot+2)
-                plt.imshow(denoised_img)
+                # plt.subplot(subplot+2)
+                # plt.imshow(denoised_img)
 
                 binarized_img =  self._binarize(denoised_img)
-                plt.subplot(subplot+3)
-                plt.imshow(binarized_img)
+                # plt.subplot(subplot+3)
+                # plt.imshow(binarized_img)
   
                 sobel_img = self._slant_corrector(binarized_img)
-                plt.subplot(subplot+4)
-                plt.imshow(sobel_img)
+                # plt.subplot(subplot+4)
+                # plt.imshow(sobel_img)
 
                 dilated_img = self._dilate_image(sobel_img)
-                plt.subplot(subplot+6)
-                plt.imshow(dilated_img)
+                # plt.subplot(subplot+6)
+                # plt.imshow(dilated_img)
 
-                centered_img = self._deskew(dilated_img)
-                plt.subplot(subplot+7)
-                plt.imshow(centered_img)
+                centered_img = self._deskew(dilated_img, file)
+                # plt.subplot(subplot+7)
+                # plt.imshow(centered_img)
 
-                Segmentation(self._deskew(img)).process()
-                img_session += 1
+                result_proceed_path = "./result/proceed/{}".format(file)
+                cv.imwrite(
+                    result_proceed_path,
+                    centered_img
+                )
+
+                print(file)
+                print('---------------------------------')
+                self.words_count, self.chars_count = Segmentation(
+                    centered_img, self.words_count, self.chars_count).process()
                 # plt.show()
                 # break
     
@@ -54,23 +65,23 @@ class PreprocessImageDataset(object):
         return cv.fastNlMeansDenoising(img,None,3,7,21)
 
     def _binarize(self, img):
-        # _, treshold_img = cv.threshold(img,0,255, cv.THRESH_OTSU)
-        th, treshold_img = cv.threshold(img, 127, 255, cv.THRESH_BINARY_INV|cv.THRESH_OTSU)
+        _, treshold_img = cv.threshold(img,0,255, cv.THRESH_OTSU)
+        # th, treshold_img = cv.threshold(img, 127, 255, cv.THRESH_BINARY_INV|cv.THRESH_OTSU)
         return treshold_img
 
     def _slant_corrector(self, img):
         edges = cv.Canny(img, 100, 200)
-        img_sobelx = cv.Sobel(edges, cv.CV_8U, 1, 0, ksize=5)
-        img_sobely = cv.Sobel(edges, cv.CV_8U, 0, 1, ksize=5)
+        img_sobelx = cv.Sobel(edges, cv.CV_8U, 1, 0, ksize=0)
+        img_sobely = cv.Sobel(edges, cv.CV_8U, 0, 1, ksize=0)
         img_sobel = img_sobelx + img_sobely
         return img_sobel
 
     def _dilate_image(self, img):
-        # dilated_img = cv.dilate(img, self.kernel, iterations = 1)
-        dilated_img = cv.dilate(img, None ,iterations = 4)
+        dilated_img = cv.dilate(img, self.kernel, iterations = 1)
+        # dilated_img = cv.dilate(img, None ,iterations = 4)
         return dilated_img
 
-    def _deskew(self, img):
+    def _deskew(self, img, file=None):
         thresh=img
         edges = cv.Canny(thresh,50,200,apertureSize = 3)
         
@@ -102,30 +113,73 @@ class PreprocessImageDataset(object):
             pass
         return rotated
 
+    def _deskew2(self, img, file=None):
+        mask = img > 0
+        coords_corp = np.argwhere(mask)
+
+        x0, y0 = coords_corp.min(axis=0)
+        x1, y1 = coords_corp.max(axis=0) + 1 # slices are exclusive at the top
+        print(x0, x1, y0, y1)
+        cropped = img[x0:x1,y0:y1]
+        result_cropped_path = "./result/cropped/{}".format(file)
+        cv.imwrite(
+            result_cropped_path,
+            cropped
+        )
+
+        # grab the (x, y) coordinates of all pixel values that
+        # are greater than zero, then use these coordinates to
+        # compute a rotated bounding box that contains all
+        # coordinates
+        coords = np.column_stack(np.where(cropped > 0))
+        angle = cv.minAreaRect(coords)[-1]
+        print('before angle---', angle)
+
+        # the `cv2.minAreaRect` function returns values in the
+        # range [-90, 0); as the rectangle rotates clockwise the
+        # returned angle trends to 0 -- in this special case we
+        # need to add 90 degrees to the angle
+        if angle < -45:
+            angle = -(90 + angle)
+        # otherwise, just take the inverse of the angle to make
+        # it positive
+        else:
+            angle = -angle
+        
+        print('after angle---', angle)
+
+        # rotate the image to deskew it
+        (h, w) = img.shape[:2]
+        center = (w // 2, h // 2)
+        M = cv.getRotationMatrix2D(center, angle, 1.0)
+        rotated = cv.warpAffine(img, M, (w, h),
+            flags=cv.INTER_CUBIC, borderMode=cv.BORDER_REPLICATE)
+        return rotated
 
 class Segmentation(object):
-    def __init__(self, img):
+    def __init__(self, img, words_count, chars_count):
         self.img = img
-        self.min_pixel_threshold = 25
-        self.min_separation_threshold = 35
+        self.min_pixel_threshold = 500
+        self.min_separation_threshold = 25
         self.min_round_letter_threshold = 190
-        
+        self.words_count = words_count
+        self.chars_count = chars_count
 
     def process(self):
         textLines = self.line_segment()
         imgList = self.word_segment(textLines)
         print ('No. of Words',len(imgList))
-        counter = 0
+        # counter = 0
         for letterGray in imgList:
             print ('LetterGray shape: ',letterGray.shape)
-            gray = cv.cvtColor(letterGray, cv.COLOR_BGR2GRAY)
+            # gray = cv.cvtColor(letterGray, cv.COLOR_BGR2GRAY)
             th, letterGray = cv.threshold(
-                gray,
+                letterGray,
                 127,
                 255,
                 cv.THRESH_BINARY_INV|cv.THRESH_OTSU)
             letter2 = letterGray.copy()
-            letterGray = cv.dilate(letterGray,None,iterations = 5)
+            # letterGray = cv.dilate(letterGray,None,iterations = 4)
             upoints, dpoints = self._find_cap_points(letterGray)
             upper_baseline, lower_baseline = self.baselines(
                 upoints,
@@ -134,20 +188,23 @@ class Segmentation(object):
                 letter2
             )
             seg = self.visualize(letterGray, letter2, upper_baseline, lower_baseline)
+            print('seg', seg)
             words = self.segment_characters(seg,letterGray)
             result_word_path = "./result/characters/{}.jpeg"
             for word in words:
                 print('word', word)
                 cv.imwrite(
-                    result_word_path.format(counter),
+                    result_word_path.format(self.chars_count),
                     word
                 )
-                counter += 1
+                # counter += 1
+                self.chars_count += 1
+            return self.words_count, self.chars_count
 
     def line_segment(self):
-        gray = cv.cvtColor(self.img, cv.COLOR_BGR2GRAY)
-        th, threshed = cv.threshold(gray, 127, 255, cv.THRESH_BINARY_INV|cv.THRESH_OTSU)
-    
+        # gray = cv.cvtColor(self.img, cv.COLOR_BGR2GRAY)
+        # th, threshed = cv.threshold(gray, 127, 255, cv.THRESH_BINARY_INV|cv.THRESH_OTSU)
+        threshed  = self.img
         upper=[]
         lower=[]
         flag=True
@@ -178,12 +235,15 @@ class Segmentation(object):
     def word_segment(self, text_lines):
         wordImgList=[]
         counter=0
+        words_img_count = 0
         cl=0
         for txt_line in text_lines:
-            print('txt line', txt_line)
-            gray = cv.cvtColor(txt_line, cv.COLOR_BGR2GRAY)
-            th, threshed = cv.threshold(gray, 100, 255, cv.THRESH_BINARY_INV|cv.THRESH_OTSU)
-            final_thr = cv.dilate(threshed,None,iterations = 20)
+            # print('txt line', txt_line)
+            # gray = cv.cvtColor(txt_line, cv.COLOR_BGR2GRAY)
+            # gray = txt_line
+            # th, threshed = cv.threshold(gray, 100, 255, cv.THRESH_BINARY_INV|cv.THRESH_OTSU)
+            # final_thr = cv.dilate(txt_line,None,iterations = 4)
+            final_thr = txt_line
             
             contours, hierarchy = cv.findContours(
                 final_thr,
@@ -194,18 +254,20 @@ class Segmentation(object):
             (contours, boundingBoxes) = zip(
                 *sorted(
                     zip(contours, boundingBoxes), key=lambda b: b[1][0], reverse=False))
-        
+            # print('conuntours--------', len(contours))
             for cnt in contours:
                 area = cv.contourArea(cnt)
-                if area > 10000:
+                if area > 100000:
+                    print('conuntours--------', cnt)
+                    print('area----------', area)
                     print ('Area= ',area)
                     x,y,w,h = cv.boundingRect(cnt)
                     print (x,y,w,h)
                     letterBgr = txt_line[0:txt_line.shape[1],x:x+w]
                     wordImgList.append(letterBgr)
-                    words_result_path = "./result/words/{}.jpg".format(words_img_count)
+                    words_result_path = "./result/words/{}.jpg".format(self.words_count)
                     cv.imwrite(words_result_path,letterBgr)
-                    words_img_count += 1
+                    self.words_count += 1
             cl=cl+1
         return wordImgList
 
@@ -293,6 +355,11 @@ class Segmentation(object):
         ##------------Making Histograms (Default)------------------------######
         colcnt = np.sum(cropped==255, axis=0)
         x = list(range(len(colcnt)))
+        plt.text(0, 0, self.words_count, fontsize=12)
+        # plt.subplot(121)
+        # plt.plot(colcnt)
+        # plt.fill_between(x, colcnt, 1, facecolor='blue', alpha=0.5)
+        # plt.show()  
         return colcnt
 
     def visualize(self, letter, letter2, upper_baseline, lower_baseline):
@@ -304,13 +371,22 @@ class Segmentation(object):
 
         cropped = letter2[upper_baseline:lower_baseline,0:w]
         colcnt = self.histogram(letter2, cropped)
+        print('v-colcnt', most_frequent(list(colcnt)))
+        # set min_pixel_threshold buat ambil jarak segment
+        self.min_pixel_threshold = most_frequent(list(colcnt))
+        # sum(colcnt) / len(colcnt)
+        print('mean,' , self.min_pixel_threshold)
         ## Check if pixel count is less than min_pixel_threshold, add segmentation point
         for i in range(len(colcnt)):
+            # print('vc', colcnt[i], i)
+            # kalau colcnt dr histogram < dari rata2 jarak maka dia masuk ke segment yg mau di process
             if(colcnt[i] < self.min_pixel_threshold):
                 seg1.append(i)
             
         ## Check if 2 consequtive seg points are greater than min_separation_threshold in distance
+        print('seg1', seg1)
         for i in range(len(seg1)-1):
+            print('seg diff', seg1[i+1]-seg1[i])
             if(seg1[i+1]-seg1[i] > self.min_separation_threshold):
                 seg2.append(seg1[i])
 
@@ -343,12 +419,22 @@ class Segmentation(object):
         print('Difference array: ',diffarr)
         
         for i in range(len(seg2)):
-            if(diffarr[i] < self.min_round_letter_threshold):
-                seg.append(seg2[i])
+            # if(diffarr[i] < self.min_round_letter_threshold):
+            seg.append(seg2[i])
 
         ## Make the Cut 
+        fin_letter = None
         for i in range(len(seg)):
-            letter3 = cv.line(letter2,(seg[i],0),(seg[i],h),(255,0,0),2)
+            letter3 = cv.line(letter2,(seg[i]+5,0),(seg[i]+5,h),(255,0,0),2)
+            fin_letter = letter3
+            print('letter3', letter3)
+            seg_path = "./result/seg_visualize/{}-{}.jpeg".format(self.words_count, i)
+            cv.imwrite(seg_path, letter3)
+        # plt.text(0, 0, self.words_count, fontsize=12)
+        # plt.subplot(122)
+        # # plt.fill_between(x, colcnt, 1, facecolor='blue', alpha=0.5)
+        # plt.imshow(fin_letter)  
+        # return colcnt
         
         print("Does it work::::")
 
@@ -358,10 +444,11 @@ class Segmentation(object):
         s = 0
         wordImgList = []
         fn = 0
+        print('len seg', seg)
         for i in range(len(seg)):
             if i==0:
                 s=seg[i]
-                if s > 15:
+                if s > 150:
                     wordImg = lettergray[0:,0:s]
                     cntx=np.count_nonzero(wordImg == 255) 
                     print ('count',cntx)
@@ -369,7 +456,7 @@ class Segmentation(object):
                 else:
                     continue
             elif (i != (len(seg)-1)):
-                if seg[i]-s > 15:
+                if seg[i]-s > 150:
                     wordImg = lettergray[0:,s:seg[i]]
                     cntx=np.count_nonzero(wordImg == 255) 
                     print ('count',cntx)
@@ -386,9 +473,28 @@ class Segmentation(object):
 
         return wordImgList
 
+def most_frequent(List): 
+    counter = 0
+    num = List[0] 
+      
+    for i in List: 
+        curr_frequency = List.count(i) 
+        if(curr_frequency> counter): 
+            counter = curr_frequency 
+            num = i 
+  
+    return num 
 
+def clean_up():
+    dirs_cleaning = ['result/characters', 'result/seg_visualize']
+    for root, dirs, files in os.walk("result"):
+        if root in dirs_cleaning:
+            for file in files:
+                os.remove("{}/{}".format(root, file))
 
-PreprocessImageDataset().preprocessor()      
+        
+clean_up()
+PreprocessImageDataset().preprocessor()
         
 
         
